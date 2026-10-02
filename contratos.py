@@ -8,7 +8,7 @@ from __future__ import annotations
 import pyarrow as pa
 import pandas as pd
 
-VERSION_CONTRATO = "2.0.0"
+VERSION_CONTRATO = "2.1.0"   # 2.1: + eventos_crudos (staging de ingesta SIMMA)
 CRS_PROYECTADO = "EPSG:9377"
 TAMANO_CELDA_M = 1000          # celda regular 1 km
 TAMANO_PIXEL_LLUVIA_M = 5000   # aprox. CHIRPS 0.05° (~5.5 km); 5x5 celdas por píxel
@@ -65,6 +65,33 @@ EVENTOS = pa.schema([
     ("usable_temporal", pa.bool_()),     # precision_fecha == "dia" y fecha en rango de lluvia
 ])
 
+# ---------------------------------------------------------------- 2b. eventos_crudos (staging)
+# Salida de la ingesta SIMMA antes de geolocalizar. lat/lon nulos hasta que se resuelva la
+# ubicación; de aquí se deriva `eventos` (que exige cell_id) con las filas ubicadas.
+UBICACION_METODO = ["portal_dms", "centroide_vereda", "centroide_municipio"]
+EVENTOS_CRUDOS = pa.schema([
+    ("evento_id", pa.string()),
+    ("fuente", pa.string()),             # simma_catalogo | simma_inventario
+    ("simma_id", pa.string()),           # nullable: los PDF no lo traen
+    ("tipo_movimiento", pa.string()),    # canónico: deslizamiento | caida | flujo | reptacion | otro
+    ("tipo_movimiento_original", pa.string()),
+    ("tipo_secundario", pa.string()),
+    ("subtipo", pa.string()),
+    ("subtipo_secundario", pa.string()),
+    ("material", pa.string()),
+    ("material_secundario", pa.string()),
+    ("fecha_evento_txt", pa.string()),   # tal como viene, para auditoría
+    ("fecha_evento", pa.date32()),
+    ("precision_fecha", pa.string()),    # enum PRECISION_FECHA
+    ("departamento", pa.string()),
+    ("municipio", pa.string()),
+    ("vereda", pa.string()),
+    ("lat", pa.float64()), ("lon", pa.float64()),   # WGS84, nullable
+    ("ubicacion_metodo", pa.string()),   # enum UBICACION_METODO, nulo si lat/lon nulos
+    ("precision_espacial_m", pa.float32()),
+    ("pagina_pdf", pa.int32()),          # nullable si no viene de PDF
+])
+
 # ---------------------------------------------------------------- 3. lluvia
 # Nivel píxel CHIRPS, NO nivel celda: la celda no agrega resolución de lluvia.
 # ~1.2k píxeles x ~9k días = ~11M filas. Variables antecedentes se derivan, no se guardan.
@@ -119,6 +146,7 @@ PREDICCIONES = pa.schema([
 ESQUEMAS = {
     "celdas": CELDAS,
     "eventos": EVENTOS,
+    "eventos_crudos": EVENTOS_CRUDOS,
     "lluvia_diaria": LLUVIA_DIARIA,
     "muestras_susceptibilidad": MUESTRAS_SUSC,
     "muestras_case_crossover": MUESTRAS_CC,
@@ -128,6 +156,7 @@ ESQUEMAS = {
 CLAVES = {
     "celdas": ["cell_id"],
     "eventos": ["evento_id"],
+    "eventos_crudos": ["evento_id"],
     "lluvia_diaria": ["pixel_lluvia_id", "fecha"],
     "muestras_susceptibilidad": ["cell_id"],
     "muestras_case_crossover": ["estrato_id", "fecha"],
@@ -138,6 +167,8 @@ NO_NULOS = {
     "celdas": [f.name for f in CELDAS],
     "eventos": ["evento_id", "tipo_movimiento", "precision_fecha", "lon", "lat",
                 "cell_id", "usable_temporal"],
+    "eventos_crudos": ["evento_id", "fuente", "tipo_movimiento", "fecha_evento_txt",
+                       "precision_fecha", "departamento", "municipio"],
     "lluvia_diaria": [f.name for f in LLUVIA_DIARIA],
     "muestras_susceptibilidad": [f.name for f in MUESTRAS_SUSC],
     "muestras_case_crossover": [f.name for f in MUESTRAS_CC],
@@ -179,6 +210,19 @@ def validar(nombre: str, df: pd.DataFrame, celdas: pd.DataFrame | None = None) -
         incoh = df["usable_temporal"] & (df["precision_fecha"] != "dia")
         if incoh.any():
             errores.append(f"eventos: {int(incoh.sum())} usable_temporal sin precisión diaria")
+    if nombre == "eventos_crudos":
+        malos = ~df["precision_fecha"].isin(PRECISION_FECHA)
+        if malos.any():
+            errores.append(f"eventos_crudos.precision_fecha: {int(malos.sum())} valores fuera de enum")
+        ubic = df["lat"].notna() & df["lon"].notna()
+        if (ubic != df["ubicacion_metodo"].notna()).any():
+            errores.append("eventos_crudos: ubicacion_metodo debe estar lleno si y solo si hay lat/lon")
+        m = df["ubicacion_metodo"].notna() & ~df["ubicacion_metodo"].isin(UBICACION_METODO)
+        if m.any():
+            errores.append(f"eventos_crudos.ubicacion_metodo: {int(m.sum())} valores fuera de enum")
+        fuera = ubic & ~(df["lat"].between(5.6, 8.2) & df["lon"].between(-74.6, -72.4))
+        if fuera.any():
+            errores.append(f"eventos_crudos: {int(fuera.sum())} coordenadas fuera de la caja de Santander")
     if nombre == "lluvia_diaria" and (df["precip_mm"] < 0).any():
         errores.append("lluvia_diaria.precip_mm: valores negativos")
     if nombre == "muestras_case_crossover":

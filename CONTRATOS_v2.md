@@ -1,6 +1,6 @@
 # Contratos de datos v2 — UTSmart 2027 · Movimientos en masa, Santander
 
-Versión `2.0.0` · Fuente de verdad ejecutable: `contratos.py` (esquemas pyarrow + `validar()`).
+Versión `2.1.0` (2.1: + `eventos_crudos`, staging de ingesta SIMMA) · Fuente de verdad ejecutable: `contratos.py` (esquemas pyarrow + `validar()`).
 Si este documento y `contratos.py` difieren, manda `contratos.py`.
 
 ## Decisiones congeladas
@@ -25,7 +25,8 @@ Si este documento y `contratos.py` difieren, manda `contratos.py`.
 | Tabla | Clave | Filas (Santander, 2010–2024) | Productor → Consumidor |
 |---|---|---|---|
 | `celdas` | `cell_id` | ~31k | ingesta geo → todos |
-| `eventos` | `evento_id` | ~3–4k (supuesto) | ingesta SIMMA → muestras |
+| `eventos_crudos` | `evento_id` | ~4.4k (Catálogo 3.919 + Inventario 469) | `ingesta/` → geolocalización |
+| `eventos` | `evento_id` | los de `eventos_crudos` con ubicación | geolocalización → muestras |
 | `lluvia_diaria` | `pixel_lluvia_id, fecha` | ~7.5M | ingesta CHIRPS → muestras, predicción |
 | `muestras_susceptibilidad` | `cell_id` | ~9k | `construir_muestras.py` → modelo A |
 | `muestras_case_crossover` | `estrato_id, fecha` | ~50k | `construir_muestras.py` → modelo B |
@@ -55,9 +56,9 @@ Cambiar a datos reales = reemplazar los tres parquet crudos con la misma forma; 
 
 ## Supuestos marcados (verificar con datos reales)
 
-- **S1** Distribución de `precision_fecha` en SIMMA-Santander: sintético usa 55/20/18/7%. **Si `dia` < 30%, el modelo B no tiene suficientes estratos** (<~600) y hay que ampliar a departamentos vecinos o a todo el Andes oriental.
+- **S1 — CERRADO (2 oct):** Catálogo Santander 3.919 registros con fecha, 3.552 desde 1981: hay estratos suficientes sin ampliar a otros departamentos. Ojo: dd/mm/aaaa no prueba precisión diaria; en el Inventario 14% de las fechas son día 1 (esperado 3%) y se reclasifican a `mes`. Ver CLAUDE.md.
 - **S2** `precision_espacial_m` nula se trata como ≤1 km. Si SIMMA reporta mayoritariamente a nivel municipio, el modelo B se degrada a nivel municipio.
-- **S3** ~3–4k eventos reportados en Santander 2010–2024. No lo sé; contar en el primer pull.
+- **S3 — CERRADO:** ~4.4k registros SIMMA en Santander (Catálogo + Inventario).
 - **S4** Coordenadas lon/lat del sintético son aproximadas (no reproyección real); irrelevante para el pipeline, no usar para mapas.
 
 ## Pendiente técnico conocido
